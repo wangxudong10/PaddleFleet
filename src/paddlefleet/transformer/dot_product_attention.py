@@ -43,12 +43,28 @@ from paddlefleet.refined_recompute import (
 )
 from paddlefleet.transformer.enums import AttnMaskType
 from paddlefleet.transformer.layer import FleetLayer
-from paddlefleet.transformer.sink_impl import sink_attention
 from paddlefleet.transformer.utils import (
     attention_mask_func,
     startend_row_indices_add_sliding_window,
 )
 from paddlefleet.utils import divide
+
+
+def _assert_fa4_available_for_sink():
+    """Assert the runtime FlashAttention build supports sink attention (FA4).
+
+    Sink attention is forwarded to flashmask_attention via ``sink=`` and is
+    only honored on FA4. Called once at construction time so non-FA4
+    environments fail fast instead of silently dropping the sink term.
+    """
+    fa_version = paddle.base.framework.get_flags(["FLAGS_flash_attn_version"])[
+        "FLAGS_flash_attn_version"
+    ]
+    assert fa_version == 4, (
+        "Sink attention is only supported with FlashAttention V4, "
+        f"but FLAGS_flash_attn_version={fa_version}. "
+        "Disable sink attention or run with FA4."
+    )
 
 
 class DotProductAttention(FleetLayer):
@@ -205,6 +221,8 @@ class DotProductAttention(FleetLayer):
                 config.init_method(self.softmax_offset)
         else:
             raise ValueError("Softmax type not supported")
+        if self.softmax_offset is not None:
+            _assert_fa4_available_for_sink()
         self.rr_flashmask_attention_func = rr_flashmask_attention()
         self.rr_flashmask_attention_cp_func = rr_flashmask_attention_cp()
 
@@ -419,7 +437,7 @@ class DotProductAttention(FleetLayer):
 
             if self.softmax_offset is not None:
                 flashmask_attention_func = partial(
-                    sink_attention, sink=self.softmax_offset
+                    flashmask_attention_func, sink=self.softmax_offset
                 )
 
             attn_output = flashmask_attention_func(
@@ -516,14 +534,9 @@ class DotProductAttention(FleetLayer):
                 flashmask_attention_func = flashmask_attention
 
             if self.softmax_offset is not None:
-                if self.context_parallel_size > 1:
-                    flashmask_attention_func = partial(
-                        flashmask_attention_func, sink=self.softmax_offset
-                    )
-                else:
-                    flashmask_attention_func = partial(
-                        sink_attention, sink=self.softmax_offset
-                    )
+                flashmask_attention_func = partial(
+                    flashmask_attention_func, sink=self.softmax_offset
+                )
 
             # TODO(umiswing): move this padding to flash_mask_facade,
             # flash_mask_facade wrap the padding logic for fa/fm function call,

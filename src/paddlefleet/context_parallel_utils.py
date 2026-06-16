@@ -823,7 +823,10 @@ def cp_flashmask_allgatherkv_balance_backward(
             )
         else:
             flashmask_info = None
-        query_grad, key_grad_gathered, value_grad_gathered = _flash_attn_bwd(
+        sink_for_bwd = (
+            sink if (sink is not None and not sink.stop_gradient) else None
+        )
+        bwd_outs = _flash_attn_bwd(
             query,
             key_gathered,
             value_gathered,
@@ -835,11 +838,22 @@ def cp_flashmask_allgatherkv_balance_backward(
             deterministic=paddle.get_flags(["FLAGS_cudnn_deterministic"])[
                 "FLAGS_cudnn_deterministic"
             ],
+            learnable_sink=sink_for_bwd,
         )
+        if sink_for_bwd is not None:
+            query_grad, key_grad_gathered, value_grad_gathered, sink_grad = (
+                bwd_outs
+            )
+        else:
+            query_grad, key_grad_gathered, value_grad_gathered = bwd_outs
+            sink_grad = None
     else:
         raise ValueError(
             f"FlashAttention version {fa_version} is not supported."
         )
+
+    if fa_version != 4:
+        sink_grad = None
 
     # Reduce-scatter key and value gradients
     key_grad = reduce_scatter_any_axis_balance(
@@ -848,21 +862,6 @@ def cp_flashmask_allgatherkv_balance_backward(
     value_grad = reduce_scatter_any_axis_balance(
         value_grad_gathered, axis=1, group=group
     )
-
-    # Compute sink gradient (per-rank local contribution; allreduced below).
-    if sink is not None and not sink.stop_gradient:
-        # Lazy import to avoid circular dependency between
-        # context_parallel_utils and transformer.sink_impl.
-        from paddlefleet.transformer.sink_impl import (
-            _sink_attention_grad_sink,
-        )
-
-        sink_grad_local = _sink_attention_grad_sink(
-            query, sink, output, log_sum_exp, output_grad
-        )
-        sink_grad = sink_grad_local
-    else:
-        sink_grad = None
 
     paddle.base.core.nvprof_nvtx_pop()
     return query_grad, key_grad, value_grad, sink_grad

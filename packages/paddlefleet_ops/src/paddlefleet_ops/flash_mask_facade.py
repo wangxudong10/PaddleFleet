@@ -55,6 +55,7 @@ def flashmask_attention(
     softmax_scale: float | None = None,
     block_mask: paddle.Tensor | None = None,
     use_varlen: bool = False,
+    sink: paddle.Tensor | None = None,
 ):
     if use_varlen:
         assert (
@@ -113,6 +114,7 @@ def flashmask_attention(
         name=name,
         softmax_scale=softmax_scale,
         block_mask=block_mask,
+        learnable_sink=sink,
     )
 
     if return_softmax_lse:
